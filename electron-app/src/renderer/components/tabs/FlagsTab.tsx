@@ -15,6 +15,7 @@ import {
 } from '../../store';
 import type { TrainingPair, TimesetRequest, FlagPreset, FavoredEmployeeDept, ShiftTimePreference, EqualityConstraint, StaffMember } from '../../../main/ipc-types';
 import { staffToCsv, departmentsToCsv } from '../../utils/csvValidators';
+import { DAY_NAMES, DAY_END_MINUTES, SLOT_MINUTES, TIME_SLOT_STARTS } from '../../../shared/constants';
 
 // Simple UUID generator for browser compatibility
 function generateId(): string {
@@ -25,12 +26,14 @@ function generateId(): string {
   });
 }
 
-const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
-const TIME_OPTIONS = [
-  '08:00', '08:30', '09:00', '09:30', '10:00', '10:30',
-  '11:00', '11:30', '12:00', '12:30', '13:00', '13:30',
-  '14:00', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00',
-];
+const TIME_OPTIONS = [...TIME_SLOT_STARTS, minutesToTimeLabel(DAY_END_MINUTES)];
+
+
+function minutesToTimeLabel(totalMinutes: number): string {
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+}
 
 // Convert 24-hour time to 12-hour format for display
 function to12Hour(time24: string): string {
@@ -719,7 +722,7 @@ export function FlagsTab() {
         <div className="card lg:col-span-2">
           <h3 className="font-semibold text-surface-200 mb-2 flex items-center">
             Shift Time Preferences
-            <Tooltip text="Softly nudge specific employees toward morning (8am-12pm) or afternoon (12pm-5pm) shifts on certain days. This is a gentle preference that won't override hard constraints or availability." />
+            <Tooltip text="Softly nudge specific employees toward morning (8am-12pm) or afternoon (12pm-5pm) shifts on certain days. This is a gentle preference that won't override hard constraints, buffered availability, or travel-time trims." />
           </h3>
           <p className="text-sm text-surface-400 mb-4">
             Set soft preferences for when employees should work on specific days

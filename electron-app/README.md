@@ -5,7 +5,7 @@ A sleek, accessible desktop application for generating optimized weekly schedule
 ## Features
 
 - **CSV Import/Export**: Drag-and-drop or file picker for staff and department data
-- **Staff Editor**: Grid-based editor with availability matrix (30-min slots)
+- **Staff Editor**: Grid-based editor with availability matrix (10-min slots) and travel-buffer flags
 - **Department Budgets**: Configure target/max hours per department
 - **Solver Flags**: Favored employees, training pairs, department priorities, time slot requests
 - **Presets**: Save and load flag configurations
@@ -28,13 +28,11 @@ cd electron-app
 # Install dependencies
 npm install
 
-# Build the main process
-npm run build:main
-
-# Start development mode (runs main + renderer concurrently)
+# Start full development mode (main watcher + Vite + Electron)
 npm run dev
 
-# In another terminal, start Electron
+# Launch the built desktop app
+npm run build
 npm start
 ```
 
@@ -90,9 +88,6 @@ The app requires a Python environment with OR-Tools. For distribution:
 ```bash
 # Run unit tests
 npm test
-
-# Run tests with coverage
-npm run test:coverage
 
 # Run E2E tests (requires built app)
 npm run test:e2e

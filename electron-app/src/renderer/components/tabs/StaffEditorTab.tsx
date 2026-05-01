@@ -7,15 +7,18 @@ import { useState, useMemo } from 'react';
 import { useStaffStore, useDepartmentStore, useUIStore } from '../../store';
 import { EmptyState } from '../ui/EmptyState';
 import { staffToCsv, AVAILABILITY_COLUMNS } from '../../utils/csvValidators';
-import { COMMON_ROLES } from '@shared/constants';
+import {
+  COMMON_ROLES,
+  createDefaultTravelBuffers,
+  DAY_NAMES,
+  SLOT_MINUTES,
+  TIME_SLOT_STARTS,
+  type DayName,
+} from '@shared/constants';
 import type { StaffMember } from '../../../main/ipc-types';
 
-const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
-const TIME_SLOTS = [
-  '08:00', '08:30', '09:00', '09:30', '10:00', '10:30',
-  '11:00', '11:30', '12:00', '12:30', '13:00', '13:30',
-  '14:00', '14:30', '15:00', '15:30', '16:00', '16:30',
-];
+const TIME_SLOTS = TIME_SLOT_STARTS;
+const HOUR_INPUT_STEP = SLOT_MINUTES / 60;
 
 // Convert 24h time to 12h format for display
 function formatTime12h(time24: string): string {
@@ -58,6 +61,7 @@ export function StaffEditorTab() {
       maxHours: 15,
       year: 1,
       availability: Object.fromEntries(AVAILABILITY_COLUMNS.map(col => [col, true])),
+      travelBuffers: createDefaultTravelBuffers(),
     };
     addStaffMember(newEmployee);
     setSelectedIndex(staff.length);
@@ -89,6 +93,24 @@ export function StaffEditorTab() {
   };
 
   const selectedEmployee = selectedIndex !== null ? staff[selectedIndex] : null;
+
+  const updateTravelBuffer = (
+    employeeIndex: number,
+    day: DayName,
+    key: 'beforeNextCommitment' | 'afterPreviousCommitment',
+    value: boolean,
+  ) => {
+    const employee = staff[employeeIndex];
+    updateStaffMember(employeeIndex, {
+      travelBuffers: {
+        ...employee.travelBuffers,
+        [day]: {
+          ...employee.travelBuffers[day],
+          [key]: value,
+        },
+      },
+    });
+  };
 
   if (staff.length === 0) {
     return (
@@ -245,7 +267,7 @@ export function StaffEditorTab() {
                       type="number"
                       min="0"
                       max="40"
-                      step="0.5"
+                      step={HOUR_INPUT_STEP}
                       value={selectedEmployee.targetHours || ''}
                       onChange={(e) => updateStaffMember(selectedIndex!, { targetHours: parseFloat(e.target.value) || 0 })}
                       onBlur={(e) => {
@@ -263,7 +285,7 @@ export function StaffEditorTab() {
                       type="number"
                       min="0"
                       max="40"
-                      step="0.5"
+                      step={HOUR_INPUT_STEP}
                       value={selectedEmployee.maxHours || ''}
                       onChange={(e) => updateStaffMember(selectedIndex!, { maxHours: parseFloat(e.target.value) || 0 })}
                       onBlur={(e) => {
@@ -395,6 +417,50 @@ export function StaffEditorTab() {
                   </table>
                 </div>
 
+                <div className="mt-5 pt-4 border-t border-surface-800">
+                  <h4 className="font-medium text-surface-300 mb-3">Travel Buffer Flags</h4>
+                  <div className="grid gap-3">
+                    {DAY_NAMES.map((day) => {
+                      const travelBuffer = selectedEmployee.travelBuffers[day];
+                      return (
+                        <div
+                          key={`${day}-travel-buffer`}
+                          className="flex flex-col gap-2 rounded-lg border border-surface-800 bg-surface-900/50 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div>
+                            <div className="font-medium text-surface-200">{day}</div>
+                            <div className="text-xs text-surface-500">
+                              Trim one {SLOT_MINUTES}-minute slot where availability meets another commitment.
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-4 text-sm text-surface-300">
+                            <label className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={travelBuffer.afterPreviousCommitment}
+                                onChange={(e) =>
+                                  updateTravelBuffer(selectedIndex!, day, 'afterPreviousCommitment', e.target.checked)
+                                }
+                              />
+                              Start {SLOT_MINUTES} min late
+                            </label>
+                            <label className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={travelBuffer.beforeNextCommitment}
+                                onChange={(e) =>
+                                  updateTravelBuffer(selectedIndex!, day, 'beforeNextCommitment', e.target.checked)
+                                }
+                              />
+                              Leave {SLOT_MINUTES} min early
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {/* Legend */}
                 <div className="mt-4 pt-3 border-t border-surface-800 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-surface-400">
                   <div className="flex items-center gap-2">
@@ -406,7 +472,7 @@ export function StaffEditorTab() {
                     <span>Not Available</span>
                   </div>
                   <div className="text-surface-500">
-                    Each block = 30 min · Click a day to toggle entire column
+                    Each block = {SLOT_MINUTES} min · Click a day to toggle the full column
                   </div>
                 </div>
               </div>

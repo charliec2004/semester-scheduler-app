@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ortools.sat.python import cp_model
 
-from scheduler.config import FRONT_DESK_ROLE
+from scheduler.config import FRONT_DESK_ROLE, SLOT_MINUTES, slots_to_hours
 from scheduler.reporting.stats import aggregate_department_hours
 
 
@@ -94,7 +94,7 @@ def print_schedule(
         for d in days:
             day_slots = sum(solver.value(work[e, d, t]) for t in time_slots)
             if day_slots > 0:
-                day_hours = day_slots * 0.5
+                day_hours = slots_to_hours(day_slots)
                 days_worked.append(f"{d}({day_hours:.1f}h)")
                 total_slots += day_slots
 
@@ -103,10 +103,10 @@ def print_schedule(
 
         target_hours = target_weekly_hours.get(e, 11)
         weekly_limit = weekly_hour_limits.get(e, 40)
-        total_hours = total_slots * 0.5
+        total_hours = slots_to_hours(total_slots)
 
         hours_str = f"{total_hours:.1f} (↑{target_hours}/max {weekly_limit})"
-        if abs(total_hours - target_hours) <= 0.5:
+        if abs(total_hours - target_hours) <= (SLOT_MINUTES / 60):
             hours_str = f"✓ {hours_str}"
 
         print(f"{e:<15}{quals:<35}{hours_str:<30}{days_str}")
@@ -131,7 +131,8 @@ def print_schedule(
 
         day_summary = (
             ", ".join(
-                f"{role_display_names[role]} {role_counts[role] * 0.5:.1f}h" for role in roles if role_counts[role] > 0
+                f"{role_display_names[role]} {slots_to_hours(role_counts[role]):.1f}h"
+                for role in roles if role_counts[role] > 0
             )
             or "No assignments"
         )
@@ -160,7 +161,7 @@ def print_schedule(
         role_name = role_display_names[role]
 
         if role == FRONT_DESK_ROLE:
-            actual_hours = role_direct_slots[role] * 0.5
+            actual_hours = slots_to_hours(role_direct_slots[role])
             target = department_hour_targets.get(role)
             max_hours = department_max_hours.get(role)
             dual_hours = "-"

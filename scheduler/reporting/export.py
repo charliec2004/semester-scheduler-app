@@ -10,7 +10,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pandas as pd
 from ortools.sat.python import cp_model
 
-from scheduler.config import FRONT_DESK_ROLE
+from scheduler.config import FRONT_DESK_ROLE, SLOT_MINUTES, slots_to_hours
 from scheduler.reporting.stats import aggregate_department_hours
 
 
@@ -69,11 +69,11 @@ def export_schedule_to_excel(
             day_slots = sum(solver.value(work[e, d, t]) for t in time_slots)
             if day_slots > 0:
                 total_slots += day_slots
-                days_worked.append(f"{d}({day_slots * 0.5:.1f}h)")
+                days_worked.append(f"{d}({slots_to_hours(day_slots):.1f}h)")
         target_hours = target_weekly_hours.get(e, 0)
         max_hours = weekly_hour_limits.get(e, 0)
-        total_hours = total_slots * 0.5
-        hit_target = abs(total_hours - target_hours) <= 0.5
+        total_hours = slots_to_hours(total_slots)
+        hit_target = abs(total_hours - target_hours) <= (SLOT_MINUTES / 60)
         summary_rows.append(
             [
                 e,
@@ -104,9 +104,9 @@ def export_schedule_to_excel(
                 solver.value(assign[(e, d, t, role)]) if (e, d, t, role) in assign else 0 for e in employees for t in time_slots
             )
             role_totals[role] += slot_count
-            row.append(slot_count * 0.5)
+            row.append(slots_to_hours(slot_count))
         distribution_rows.append(row)
-    total_row = ["TOTAL"] + [role_totals[r] * 0.5 for r in roles]
+    total_row = ["TOTAL"] + [slots_to_hours(role_totals[r]) for r in roles]
     distribution_rows.append(total_row)
     distribution_columns = ["Day"] + [role_display_names[role] for role in roles]
 
@@ -209,8 +209,8 @@ def _format_time_range(start_str: str, end_str: str) -> str:
 
     start_min = to_minutes(start_str)
     end_min = to_minutes(end_str)
-    # end_str represents the start of the final slot; add 30 minutes for the true end
-    end_min += 30
+    # end_str represents the start of the final slot; add one slot for the true end
+    end_min += SLOT_MINUTES
     return f"{fmt(start_min)}-{fmt(end_min)}"
 
 
@@ -474,8 +474,8 @@ def export_formatted_schedule(
 
         if role == FRONT_DESK_ROLE:
             # FD: Row has FD label + day headers on same row
-            counted = role_direct_slots[role] * 0.5
-            ws.write(row, 0, f"FD: {counted:.0f}", bold_fmt)
+            counted = slots_to_hours(role_direct_slots[role])
+            ws.write(row, 0, f"FD: {counted:.1f}", bold_fmt)
             
             # Day headers on same row as FD
             for idx, day in enumerate(days):
@@ -528,7 +528,7 @@ def export_formatted_schedule(
             focused = stats["focused_hours"]
             
             # Dept name + day headers on same row
-            ws.write(row, 0, f"{display}: {counted:.0f} ({actual:.1f})", bold_fmt)
+            ws.write(row, 0, f"{display}: {counted:.1f} ({actual:.1f})", bold_fmt)
             for idx, day in enumerate(days):
                 full_day = day_full_names.get(day, day)
                 name_col = 1 + idx * 2
@@ -543,9 +543,9 @@ def export_formatted_schedule(
             for i in range(grid_rows):
                 # Column A: Dual on row 0, Focused on row 1, empty after
                 if i == 0:
-                    ws.write(row + i, 0, f"Dual: {dual_counted:.1f} ({dual_actual:.0f})", stats_fmt)
+                    ws.write(row + i, 0, f"Dual: {dual_counted:.1f} ({dual_actual:.1f})", stats_fmt)
                 elif i == 1:
-                    ws.write(row + i, 0, f"Focused: {focused:.0f}", stats_fmt)
+                    ws.write(row + i, 0, f"Focused: {focused:.1f}", stats_fmt)
                 
                 # Schedule data in columns B onwards
                 for idx, day in enumerate(days):

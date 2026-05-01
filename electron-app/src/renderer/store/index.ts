@@ -19,6 +19,29 @@ import type {
   HistoryEntry,
   ConfigSnapshot,
 } from '../../main/ipc-types';
+import {
+  createDefaultTravelBuffers,
+  DAY_NAMES,
+  normalizeAvailabilityMap,
+} from '../../shared/constants';
+
+
+function normalizeStaffMember(member: StaffMember): StaffMember {
+  const defaultTravelBuffers = createDefaultTravelBuffers();
+  return {
+    ...member,
+    availability: normalizeAvailabilityMap(member.availability),
+    travelBuffers: Object.fromEntries(
+      DAY_NAMES.map(day => [
+        day,
+        {
+          beforeNextCommitment: member.travelBuffers?.[day]?.beforeNextCommitment ?? defaultTravelBuffers[day].beforeNextCommitment,
+          afterPreviousCommitment: member.travelBuffers?.[day]?.afterPreviousCommitment ?? defaultTravelBuffers[day].afterPreviousCommitment,
+        },
+      ]),
+    ) as StaffMember['travelBuffers'],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Settings Store
@@ -83,16 +106,16 @@ export const useStaffStore = create<StaffState>((set, get) => ({
   warnings: [],
   dirty: false,
 
-  setStaff: (staff, path) => set({ staff, staffPath: path ?? null, dirty: false }),
+  setStaff: (staff, path) => set({ staff: staff.map(normalizeStaffMember), staffPath: path ?? null, dirty: false }),
   
   updateStaffMember: (index, member) => {
     const staff = [...get().staff];
-    staff[index] = { ...staff[index], ...member };
+    staff[index] = normalizeStaffMember({ ...staff[index], ...member });
     set({ staff, dirty: true });
   },
 
   addStaffMember: (member) => {
-    set({ staff: [...get().staff, member], dirty: true });
+    set({ staff: [...get().staff, normalizeStaffMember(member)], dirty: true });
   },
 
   removeStaffMember: (index) => {
@@ -120,7 +143,7 @@ export const useStaffStore = create<StaffState>((set, get) => ({
   loadSavedStaff: async () => {
     const staff = await window.electronAPI.data.loadStaff();
     if (staff && staff.length > 0) {
-      set({ staff, dirty: false });
+      set({ staff: staff.map(normalizeStaffMember), dirty: false });
     }
   },
 }));

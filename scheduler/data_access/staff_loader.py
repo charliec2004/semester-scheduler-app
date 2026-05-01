@@ -8,7 +8,19 @@ from typing import Dict, List, Optional, Set
 
 import pandas as pd
 
-from scheduler.config import AVAILABILITY_COLUMNS, DAY_NAMES, FRONT_DESK_ROLE, TIME_SLOT_STARTS
+from scheduler.config import (
+    AVAILABILITY_COLUMNS,
+    DAY_NAMES,
+    FRONT_DESK_ROLE,
+    LEGACY_AVAILABILITY_COLUMNS,
+    LEGACY_SLOT_MINUTES,
+    LEGACY_TIME_SLOT_STARTS,
+    SLOT_MINUTES,
+    TIME_SLOT_STARTS,
+    TRAVEL_BUFFER_AFTER_COLUMNS,
+    TRAVEL_BUFFER_BEFORE_COLUMNS,
+    is_slot_aligned_hours,
+)
 from scheduler.domain.models import StaffData, normalize_department_name
 
 
@@ -43,6 +55,40 @@ def _coerce_numeric(value, column_name: str, record_name: str) -> float:
         ) from None
 
 
+def _coerce_bool_flag(value) -> bool:
+    try:
+        return int(float(value)) == 1
+    except (TypeError, ValueError):
+        return False
+
+
+def _require_slot_aligned_hours(value: float, column_name: str, record_name: str) -> float:
+    if not is_slot_aligned_hours(value):
+        raise ValueError(
+            f"Invalid hour value '{value}' for column '{column_name}' on record '{record_name}': "
+            "values must align to the 10-minute slot grid."
+        )
+    return value
+
+
+def _resolve_availability_schema(column_map: Dict[str, str], path: Path) -> str:
+    has_current_grid = all(column.lower() in column_map for column in AVAILABILITY_COLUMNS)
+    has_legacy_grid = all(column.lower() in column_map for column in LEGACY_AVAILABILITY_COLUMNS)
+
+    if has_current_grid:
+        return "current"
+    if has_legacy_grid:
+        return "legacy"
+
+    missing_current = [col for col in AVAILABILITY_COLUMNS if col.lower() not in column_map]
+    preview = ", ".join(missing_current[:5])
+    suffix = "..." if len(missing_current) > 5 else ""
+    raise ValueError(
+        f"Missing availability columns in {path}: {preview}{suffix}. "
+        "Provide either the full 10-minute grid or the legacy 30-minute grid."
+    )
+
+
 def load_staff_data(path: Path) -> StaffData:
     if not path.exists():
         raise FileNotFoundError(f"Staff CSV not found: {path}")
@@ -62,11 +108,8 @@ def load_staff_data(path: Path) -> StaffData:
     max_col = require_column("max_hours")
     year_col = require_column("year")
 
-    missing_availability = [col for col in AVAILABILITY_COLUMNS if col not in df.columns]
-    if missing_availability:
-        preview = ", ".join(missing_availability[:5])
-        suffix = "..." if len(missing_availability) > 5 else ""
-        raise ValueError(f"Missing availability columns in {path}: {preview}{suffix}")
+    availability_schema = _resolve_availability_schema(column_map, path)
+    legacy_stride = LEGACY_SLOT_MINUTES // SLOT_MINUTES
 
     employees: List[str] = []
     qual: Dict[str, Set[str]] = {}
@@ -90,8 +133,19 @@ def load_staff_data(path: Path) -> StaffData:
         all_roles.update(role_set)
         qual[name] = role_set
 
-        max_hours = _coerce_numeric(row[max_col], max_col, name)
-        target_hours = min(_coerce_numeric(row[target_col], target_col, name), max_hours)
+        max_hours = _require_slot_aligned_hours(
+            _coerce_numeric(row[max_col], max_col, name),
+            max_col,
+            name,
+        )
+        target_hours = min(
+            _require_slot_aligned_hours(
+                _coerce_numeric(row[target_col], target_col, name),
+                target_col,
+                name,
+            ),
+            max_hours,
+        )
         weekly_hour_limits[name] = max_hours
         target_weekly_hours[name] = target_hours
 
@@ -100,16 +154,43 @@ def load_staff_data(path: Path) -> StaffData:
 
         availability: Dict[str, List[int]] = {}
         for day in DAY_NAMES:
-            unavailable_slots: List[int] = []
-            for slot_index, start_time in enumerate(TIME_SLOT_STARTS):
-                column = f"{day}_{start_time}"
-                value = row[column]
-                try:
-                    can_work = int(float(value)) == 1
-                except (TypeError, ValueError):
-                    can_work = False
-                if not can_work:
-                    unavailable_slots.append(slot_index)
+            before_buffer_col = column_map.get(TRAVEL_BUFFER_BEFORE_COLUMNS[day].lower())
+            after_buffer_col = column_map.get(TRAVEL_BUFFER_AFTER_COLUMNS[day].lower())
+            before_buffer = _coerce_bool_flag(row[before_buffer_col]) if before_buffer_col else False
+            after_buffer = _coerce_bool_flag(row[after_buffer_col]) if after_buffer_col else False
+
+            raw_available: List[bool]
+            if availability_schema == "current":
+                raw_available = []
+                for start_time in TIME_SLOT_STARTS:
+                    column = column_map[f"{day}_{start_time}".lower()]
+                    raw_available.append(_coerce_bool_flag(row[column]))
+            else:
+                raw_available = []
+                for start_time in LEGACY_TIME_SLOT_STARTS:
+                    column = column_map[f"{day}_{start_time}".lower()]
+                    is_available = _coerce_bool_flag(row[column])
+                    raw_available.extend([is_available] * legacy_stride)
+
+            blocked_slots = set()
+            if before_buffer:
+                blocked_slots.update(
+                    slot_index
+                    for slot_index in range(len(raw_available) - 1)
+                    if raw_available[slot_index] and not raw_available[slot_index + 1]
+                )
+            if after_buffer:
+                blocked_slots.update(
+                    slot_index
+                    for slot_index in range(1, len(raw_available))
+                    if raw_available[slot_index] and not raw_available[slot_index - 1]
+                )
+
+            unavailable_slots = [
+                slot_index
+                for slot_index, can_work in enumerate(raw_available)
+                if not can_work or slot_index in blocked_slots
+            ]
             if unavailable_slots:
                 availability[day] = unavailable_slots
         if availability:

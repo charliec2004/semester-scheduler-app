@@ -12,8 +12,18 @@ from typing import Dict, Tuple
 
 import pandas as pd
 
+from scheduler.config import is_slot_aligned_hours
 from scheduler.domain.models import DepartmentRequirements, normalize_department_name
 from scheduler.data_access.staff_loader import _coerce_numeric, _normalize_columns
+
+
+def _require_slot_aligned_hours(value: float, column_name: str, record_name: str) -> float:
+    if not is_slot_aligned_hours(value):
+        raise ValueError(
+            f"Invalid hour value '{value}' for column '{column_name}' on record '{record_name}': "
+            "values must align to the 10-minute slot grid."
+        )
+    return value
 
 
 def load_department_requirements(path: Path) -> DepartmentRequirements:
@@ -87,8 +97,16 @@ def load_department_requirements(path: Path) -> DepartmentRequirements:
             raise ValueError(f"Duplicate department entry detected: '{department}'")
 
         # Parse and validate numeric values (coerce to float)
-        target_hours = _coerce_numeric(row[target_col], target_col, department)
-        max_hours = _coerce_numeric(row[max_col], max_col, department)
+        target_hours = _require_slot_aligned_hours(
+            _coerce_numeric(row[target_col], target_col, department),
+            target_col,
+            department,
+        )
+        max_hours = _require_slot_aligned_hours(
+            _coerce_numeric(row[max_col], max_col, department),
+            max_col,
+            department,
+        )
         
         # Validate: target cannot exceed maximum
         if max_hours < target_hours:

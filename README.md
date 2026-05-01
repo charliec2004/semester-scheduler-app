@@ -50,9 +50,9 @@ Automated scheduling system that builds optimal weekly rosters for Chapman Unive
 **Solution**: Constraint programming optimizer that:
 
 - Reduces scheduling time from hours to **under 2 minutes**
-- Guarantees **100% front desk coverage** (8am-5pm, Mon-Fri) with backups
+- Strongly prioritizes **full front desk coverage** (8am-5pm, Mon-Fri) and only leaves gaps when coverage is infeasible
 - Optimizes departmental staffing within target goals
-- Balances 2,340+ decision variables across 13 competing priorities
+- Balances thousands of assignment decisions across 13 competing priorities
 
 **Technical Highlights**: Multi-objective optimization, sophisticated constraint satisfaction, handles complex edge cases (minimum shift lengths, role transitions, resource scarcity), exports professional Excel schedules.
 
@@ -74,8 +74,8 @@ semester-scheduler/
 
 ## How It Works
 
-1. **Input**: CSV files with employee availability (90 time slots/week) and department targets
-2. **Model**: CP-SAT solver with 2,340+ variables, 15+ hard constraints, 13 weighted objectives
+1. **Input**: CSV files with employee availability (270 time slots/week on the 10-minute grid, with legacy 30-minute CSVs still accepted) and department targets
+2. **Model**: CP-SAT solver with thousands of variables, 15+ hard constraints, and 13 weighted objectives
 3. **Optimize**: Maximizes weighted objective (front desk coverage weight: 10,000) in 60-120 sec
 4. **Output**: Excel workbook with daily/weekly schedules, employee summaries, role distribution
 
@@ -105,14 +105,14 @@ pytest tests/ -v
 
 ## Input Format
 
-**employees.csv**: `name`, `roles` (semicolon/comma-separated), `target_hours`, `max_hours`, `year`, + 90 availability columns (`Mon_08:00` through `Fri_16:30`, 1=available, 0=unavailable)
+**employees.csv**: `name`, `roles` (semicolon/comma-separated), `target_hours`, `max_hours`, `year`, optional travel buffer flags like `Mon_before_next_commitment` / `Mon_after_previous_commitment`, and 270 availability columns (`Mon_08:00` through `Fri_16:50`, 1=available, 0=unavailable)
 
 **cpd-requirements.csv**: `department`, `target_hours`, `max_hours`
 
 ## Key Features
 
 - **Guaranteed Coverage**: Front desk staffed 100% of operating hours
-- **Smart Constraints**: Continuous shifts (2-4 hours), no split shifts, respects availability
+- **Smart Constraints**: Continuous shifts (2-4 hours for standard staff, 1-8 hours for favored staff), no split shifts, respects buffered availability
 - **Multi-Objective**: Balances 13 priorities (coverage, targets, collaboration, preferences)
 - **Professional Output**: Excel with daily grids, employee summaries, departmental analysis
 - **Fast**: Solves complex scheduling problem in ~2 minutes

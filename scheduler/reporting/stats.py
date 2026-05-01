@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Tuple
 
-from scheduler.config import FRONT_DESK_ROLE
+from scheduler.config import FRONT_DESK_ROLE, slots_to_hours
 
 
 def aggregate_department_hours(
@@ -56,8 +56,8 @@ def aggregate_department_hours(
     for role in department_roles:
         focused_slots = role_direct_slots[role]
         dual_slots = dual_slots_by_role[role]
-        focused_hours = focused_slots * 0.5
-        dual_hours_total = dual_slots * 0.5
+        focused_hours = slots_to_hours(focused_slots)
+        dual_hours_total = slots_to_hours(dual_slots)
         dual_hours_counted = dual_hours_total * 0.5
         department_breakdown[role] = {
             "focused_slots": focused_slots,

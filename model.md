@@ -8,10 +8,10 @@ This scheduler uses **Google OR-Tools CP-SAT Solver** (Constraint Programming) t
 
 ## Time Structure
 
-- **Time slots**: 30-minute increments (8:00 AM - 5:00 PM)
-- **Slots per day**: 18 slots
+- **Time slots**: 10-minute increments (8:00 AM - 5:00 PM)
+- **Slots per day**: 54 slots
 - **Days**: Monday through Friday
-- **Hours calculation**: Each slot = 0.5 hours
+- **Hours calculation**: Each slot = 1/6 hour
 
 ---
 
@@ -44,14 +44,15 @@ These are **absolute requirements** that must be satisfied for any valid schedul
 ### 5. Shift Contiguity
 
 - **One continuous block per day** - no split shifts
-- If working at all, must work minimum **2 hours** (4 slots)
-- Maximum **4 hours** (8 slots) per shift
+- If working at all, non-favored staff must work minimum **2 hours** (12 slots)
+- Favored staff must still work minimum **1 hour** (6 slots)
+- Maximum **4 hours** (24 slots) per standard shift
 - Once an employee stops working, they cannot start again that day
 
 ### 6. Role Duration Minimum
 
-- Each role assignment must last **at least 1 hour** (2 consecutive slots)
-- Prevents toggling between roles (e.g., can't do marketing for 30 min, switch to events for 30 min, back to marketing)
+- Each role assignment must last **at least 1 hour** (6 consecutive slots)
+- Prevents toggling between roles in tiny fragments
 - Ensures meaningful work blocks
 
 ### 7. Single Assignment
@@ -73,7 +74,7 @@ These are **preferences** optimized through weighted scoring. Higher weight = hi
 
 - **Why**: Critical service - office must have someone at front desk
 - **How**: Massive bonus for covering each time slot
-- **Note**: While technically "soft," the 10,000 weight virtually guarantees coverage unless physically impossible (no qualified employee available)
+- **Note**: While technically "soft," coverage carries the strongest objective term and is only sacrificed when the hard constraints make full coverage impossible
 
 #### **2. Large Hour Deviations**
 
@@ -115,7 +116,7 @@ Weight: 200
   - Employer Engagement: 2 hours minimum
   - Events: 4 hours minimum
   - Data Systems: 0 (only Diana qualified)
-- **Note**: Must be sustained overlaps (single 30-min slot doesn't count)
+- **Note**: Must be sustained overlaps; isolated 10-minute blips do not satisfy the intent
 - **Context**: Increased from 50 → **200** to make collaboration a higher priority
 
 #### 6. Office Coverage
@@ -136,12 +137,12 @@ Weight: 150
 Weight: 100 (graduated by seniority)
 
 - **Why**: Students want to work their requested hours for income
-- **How**: Year-based multiplier encourages hitting targets:
-  - **Freshman (year 1)**: 100 × 1.5 = 150 points
-  - **Sophomore (year 2)**: 100 × 1.25 = 125 points
-  - **Junior (year 3)**: 100 × 1.0 = 100 points
-  - **Senior (year 4)**: 100 × 0.8 = 80 points
-- **Purpose**: Slight preference to help younger students who may need income more
+- **How**: Year-based multiplier increases adherence pressure for upperclassmen:
+  - **Year 1**: 1.0×
+  - **Year 2**: 1.2×
+  - **Year 3**: 1.5×
+  - **Year 4**: 2.0×
+- **Purpose**: Pushes the solver harder to keep older students close to their requested hours
 
 #### 8. Department Spread
 
@@ -168,8 +169,8 @@ Weight: 20
 - **Why**: Longer, fewer shifts are more efficient than many short shifts
 - **How**:
   - Rewards each slot worked (+1 per slot)
-  - Penalizes each shift day (-6 per day worked)
-  - Net effect: 4-hour shift (8 slots - 6 penalty = +2) beats two 2-hour shifts (8 slots - 12 penalty = -4)
+  - Penalizes each shift day by the equivalent of 3 hours
+  - Net effect: a single longer shift scores better than splitting the same hours across multiple days
 - **Purpose**: Reduce context switching and commute inefficiency
 
 #### 11. Department Scarcity Penalty
@@ -190,10 +191,10 @@ Weight: 0.5
 
 - **Why**: Gentle preference for younger students at front desk
 - **How**: Year-based penalty per front desk slot:
-  - **Freshman (1)**: -1 penalty = most preferred
-  - **Sophomore (2)**: -2 penalty
-  - **Junior (3)**: -3 penalty
-  - **Senior (4)**: -4 penalty = least preferred
+  - **Year 1**: -1 penalty = most preferred
+  - **Year 2**: -2 penalty
+  - **Year 3**: -3 penalty
+  - **Year 4**: -4 penalty = least preferred
 - **Purpose**: Very mild nudge when solver has equivalent options
 - **Note**: Lowest priority - only matters when everything else is equal
 
@@ -264,7 +265,7 @@ When objectives compete, the model prioritizes by weight:
 
 - **Employees**: 13
 - **Departments**: 6 + Front Desk
-- **Assignment variables**: ~2,340
+- **Assignment variables**: ~5,940 on the current sample dataset
 - **Solve time**: ~60 seconds
 - **Solver**: CP-SAT (Constraint Programming)
 
@@ -275,7 +276,8 @@ When objectives compete, the model prioritizes by weight:
 ### `employees.csv`
 
 - Employee names, qualifications, target/max hours, year
-- 90 availability columns (5 days × 18 slots)
+- 270 availability columns on the 10-minute grid (5 days × 54 slots)
+- Legacy 30-minute CSVs are still accepted and expanded automatically
 - `1` = available, `0` = unavailable
 
 ### `cpd-requirements.csv`
@@ -321,20 +323,20 @@ When objectives compete, the model prioritizes by weight:
 
 ## Tuning the Model
 
-To adjust behavior, modify weights in the objective function (line ~1010):
+To adjust behavior, modify weights in the objective function and centralized config:
 
 ```python
 model.maximize(
-    10000 * front_desk_coverage_score +    # Extremely high - virtually guarantees coverage
-    1000 * department_target_score +       # Increased to 1000 to keep depts within -4h of target
-    200 * collaborative_hours_score +      # Increased to 200 to encourage teamwork
-    150 * office_coverage_score +          # New - encourages 2+ people in office at all times
-    100 * target_adherence_score +         # Individual hour targets
+    front_desk_coverage_score +            # Highest-priority soft objective
+    objective_weights.department_target * department_target_score +
+    objective_weights.collaborative_hours * collaborative_hours_score +
+    objective_weights.office_coverage * office_coverage_score +
+    objective_weights.target_adherence * target_adherence_score +
     # ... etc
 )
 ```
 
-**Rule of thumb**: Weight ratios matter more than absolute values. Front desk at 10,000 is 10× more important than dept targets at 1000.
+**Rule of thumb**: Weight ratios matter more than the raw numbers. The 10-minute migration normalized many per-slot coefficients, so compare priorities semantically rather than by old half-hour constants.
 
 ### Current Weight Hierarchy
 

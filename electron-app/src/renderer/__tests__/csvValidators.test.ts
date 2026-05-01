@@ -13,6 +13,7 @@ import {
   departmentsToCsv,
   AVAILABILITY_COLUMNS,
 } from '../utils/csvValidators';
+import { createDefaultTravelBuffers, LEGACY_AVAILABILITY_COLUMNS } from '../../shared/constants';
 
 describe('Staff CSV Validation', () => {
   const validStaffCsv = `name,roles,target_hours,max_hours,year,${AVAILABILITY_COLUMNS.join(',')}
@@ -68,6 +69,31 @@ Alice,marketing,10,15,2,${AVAILABILITY_COLUMNS.map(() => '1').join(',')}`;
     expect(staff[0].targetHours).toBe(10);
     expect(staff[0].maxHours).toBe(15);
     expect(staff[0].year).toBe(2);
+    expect(staff[0].travelBuffers.Mon.beforeNextCommitment).toBe(false);
+    expect(staff[0].travelBuffers.Mon.afterPreviousCommitment).toBe(false);
+  });
+
+  it('accepts legacy 30-minute availability grids and expands them', () => {
+    const legacyCsv = `name,roles,target_hours,max_hours,year,${LEGACY_AVAILABILITY_COLUMNS.join(',')}
+Alice,front_desk,10,15,2,${LEGACY_AVAILABILITY_COLUMNS.map((col) => col.endsWith('08:00') ? '1' : '0').join(',')}`;
+
+    const validation = validateStaffCsv(legacyCsv);
+    expect(validation.valid).toBe(true);
+    expect(validation.warnings.some(w => w.message.includes('Legacy 30-minute'))).toBe(true);
+
+    const [staff] = parseStaffCsv(legacyCsv);
+    expect(staff.availability['Mon_08:00']).toBe(true);
+    expect(staff.availability['Mon_08:10']).toBe(true);
+    expect(staff.availability['Mon_08:20']).toBe(true);
+    expect(staff.availability['Mon_08:30']).toBe(false);
+  });
+
+  it('rejects partial availability grids that cannot be migrated safely', () => {
+    const partialCsv = `name,roles,target_hours,max_hours,year,Mon_08:00
+Alice,front_desk,10,15,2,1`;
+    const validation = validateStaffCsv(partialCsv);
+    expect(validation.valid).toBe(false);
+    expect(validation.errors.some(e => e.message.includes('full 10-minute grid'))).toBe(true);
   });
 });
 
@@ -114,6 +140,14 @@ Marketing,40,30`;
     expect(depts[0].targetHours).toBe(20);
     expect(depts[0].maxHours).toBe(30);
   });
+
+  it('rejects department hour values that do not align to 10-minute increments', () => {
+    const csv = `department,target_hours,max_hours
+Marketing,12.25,15`;
+    const result = validateDepartmentCsv(csv);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.message.includes('10-minute increments'))).toBe(true);
+  });
 });
 
 describe('CSV Export', () => {
@@ -125,6 +159,7 @@ describe('CSV Export', () => {
       maxHours: 15,
       year: 2,
       availability: Object.fromEntries(AVAILABILITY_COLUMNS.map(col => [col, true])),
+      travelBuffers: createDefaultTravelBuffers(),
     }];
     
     const csv = staffToCsv(staff);

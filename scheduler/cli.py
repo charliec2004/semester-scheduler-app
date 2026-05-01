@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from scheduler.config import DAY_NAMES, DEFAULT_SOLVER_MAX_TIME, TIME_SLOT_STARTS
+from scheduler.config import DAY_NAMES, DEFAULT_SOLVER_MAX_TIME, MAX_SLOTS, MIN_SLOTS, SLOT_MINUTES, TIME_SLOT_STARTS
 from scheduler.domain.models import (
     EqualityRequest,
     FavoredEmployeeDepartment,
@@ -98,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help=(
             "Strongly enforce assigning NAME to DEPT on DAY from START (inclusive) to END (exclusive) "
-            "in 30-minute increments. Repeatable."
+            f"in {SLOT_MINUTES}-minute increments. Repeatable."
         ),
     )
     parser.add_argument(
@@ -149,13 +149,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-slots",
         type=int,
         default=None,
-        help="Minimum shift length in 30-minute slots (default: 4 = 2 hours).",
+        help=f"Minimum shift length in {SLOT_MINUTES}-minute slots (default: {MIN_SLOTS} = 2 hours).",
     )
     parser.add_argument(
         "--max-slots",
         type=int,
         default=None,
-        help="Maximum shift length in 30-minute slots (default: 8 = 4 hours).",
+        help=f"Maximum shift length in {SLOT_MINUTES}-minute slots (default: {MAX_SLOTS} = 4 hours).",
     )
     parser.add_argument(
         "--front-desk-weight",
@@ -423,7 +423,7 @@ def _parse_timesets(raw_timesets: list[list[str]]) -> list[TimesetRequest]:
     time_to_slot = {t: idx for idx, t in enumerate(TIME_SLOT_STARTS)}
     day_lookup = {d.lower(): d for d in DAY_NAMES}
     last_start_minutes = int(TIME_SLOT_STARTS[-1].split(":")[0]) * 60 + int(TIME_SLOT_STARTS[-1].split(":")[1])
-    final_edge_minutes = last_start_minutes + 30
+    final_edge_minutes = last_start_minutes + SLOT_MINUTES
     final_edge_label = f"{final_edge_minutes // 60:02d}:{final_edge_minutes % 60:02d}"
 
     def _normalize_day(day: str) -> str:
@@ -444,7 +444,7 @@ def _parse_timesets(raw_timesets: list[list[str]]) -> list[TimesetRequest]:
             return len(TIME_SLOT_STARTS)
         if text not in time_to_slot:
             raise ValueError(
-                f"Invalid time '{value}' for --timeset. Expected HH:MM on 30-minute increments "
+                f"Invalid time '{value}' for --timeset. Expected HH:MM on {SLOT_MINUTES}-minute increments "
                 f"from {TIME_SLOT_STARTS[0]} to {TIME_SLOT_STARTS[-1]}."
             )
         return time_to_slot[text]
@@ -453,7 +453,7 @@ def _parse_timesets(raw_timesets: list[list[str]]) -> list[TimesetRequest]:
     for entry in raw_timesets:
         if len(entry) != 5:
             raise ValueError(
-                f"Invalid --timeset entry '{entry}'. Expected: NAME DAY DEPT START END (30-minute aligned)."
+                f"Invalid --timeset entry '{entry}'. Expected: NAME DAY DEPT START END ({SLOT_MINUTES}-minute aligned)."
             )
         name, day, dept, start, end = entry
         start_slot = _normalize_time(start)

@@ -3,6 +3,9 @@
  * These types define the contract between Electron main and the React renderer.
  */
 
+import type { DayName, DayTravelBuffer } from '../shared/constants';
+import { DEFAULT_MAX_SLOTS, DEFAULT_MIN_SLOTS } from '../shared/constants';
+
 // ---------------------------------------------------------------------------
 // Settings & Configuration
 // ---------------------------------------------------------------------------
@@ -35,8 +38,8 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   solverMaxTime: 180,
-  minSlots: 4,
-  maxSlots: 8,
+  minSlots: DEFAULT_MIN_SLOTS,
+  maxSlots: DEFAULT_MAX_SLOTS,
   frontDeskCoverageWeight: 10000,
   departmentTargetWeight: 1000,
   targetAdherenceWeight: 100,
@@ -50,6 +53,29 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enforceMinDeptBlock: true,
 };
 
+function looksLikeLegacySlotSettings(stored?: Partial<AppSettings> | null): boolean {
+  if (stored?.minSlots === undefined || stored?.maxSlots === undefined) {
+    return false;
+  }
+  return (
+    Number.isFinite(stored.minSlots) &&
+    Number.isFinite(stored.maxSlots) &&
+    stored.minSlots > 0 &&
+    stored.maxSlots > 0 &&
+    stored.minSlots < DEFAULT_MIN_SLOTS &&
+    stored.maxSlots <= DEFAULT_MAX_SLOTS
+  );
+}
+
+export function normalizeAppSettings(stored?: Partial<AppSettings> | null): AppSettings {
+  const merged: AppSettings = { ...DEFAULT_SETTINGS, ...stored };
+  if (looksLikeLegacySlotSettings(stored)) {
+    merged.minSlots = Math.round((stored?.minSlots ?? DEFAULT_MIN_SLOTS) * 3);
+    merged.maxSlots = Math.round((stored?.maxSlots ?? DEFAULT_MAX_SLOTS) * 3);
+  }
+  return merged;
+}
+
 // ---------------------------------------------------------------------------
 // CSV Data Models
 // ---------------------------------------------------------------------------
@@ -61,6 +87,7 @@ export interface StaffMember {
   maxHours: number;
   year: number;
   availability: Record<string, boolean>; // e.g., "Mon_08:00" -> true
+  travelBuffers: Record<DayName, DayTravelBuffer>;
 }
 
 export interface Department {

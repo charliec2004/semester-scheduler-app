@@ -5,21 +5,42 @@
 
 import Papa from 'papaparse';
 import type { StaffMember, Department, ValidationError, ValidationResult } from '../../main/ipc-types';
+import {
+  AVAILABILITY_COLUMNS,
+  createDefaultTravelBuffers,
+  DAY_NAMES,
+  isSlotAlignedHours,
+  LEGACY_AVAILABILITY_COLUMNS,
+  normalizeAvailabilityMap,
+  TRAVEL_BUFFER_AFTER_COLUMNS,
+  TRAVEL_BUFFER_BEFORE_COLUMNS,
+  TRAVEL_BUFFER_COLUMNS,
+} from '../../shared/constants';
 
-// Constants matching scheduler/config.py
-const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
-const TIME_SLOT_STARTS = [
-  '08:00', '08:30', '09:00', '09:30', '10:00', '10:30',
-  '11:00', '11:30', '12:00', '12:30', '13:00', '13:30',
-  '14:00', '14:30', '15:00', '15:30', '16:00', '16:30',
-];
-
-export const AVAILABILITY_COLUMNS = DAY_NAMES.flatMap(day => 
-  TIME_SLOT_STARTS.map(time => `${day}_${time}`)
-);
+export { AVAILABILITY_COLUMNS } from '../../shared/constants';
 
 const REQUIRED_STAFF_COLUMNS = ['name', 'roles', 'target_hours', 'max_hours', 'year'];
 const REQUIRED_DEPT_COLUMNS = ['department', 'target_hours', 'max_hours'];
+
+function hasAllHeaders(headers: string[], required: string[]): boolean {
+  return required.every(header => headers.includes(header.toLowerCase()));
+}
+
+function validateSlotAlignedHours(
+  value: number,
+  rowNum: number,
+  column: string,
+  errors: ValidationError[],
+): void {
+  if (!isNaN(value) && !isSlotAlignedHours(value)) {
+    errors.push({
+      row: rowNum,
+      column,
+      message: `${column} must align to 10-minute increments (for example 1, 1.5, 1.6667, 2)`,
+      severity: 'error',
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Staff CSV Validation
@@ -59,17 +80,18 @@ export function validateStaffCsv(content: string): ValidationResult {
   }
 
   // Check availability columns
-  const missingAvailCols = AVAILABILITY_COLUMNS.filter(col => !headers.includes(col.toLowerCase()));
-  if (missingAvailCols.length > 0) {
-    if (missingAvailCols.length === AVAILABILITY_COLUMNS.length) {
-      errors.push({
-        message: 'Missing all availability columns (e.g., Mon_08:00, Mon_08:30, ...)',
-        severity: 'error',
+  const hasCurrentAvailabilityGrid = hasAllHeaders(headers, AVAILABILITY_COLUMNS);
+  const hasLegacyAvailabilityGrid = hasAllHeaders(headers, LEGACY_AVAILABILITY_COLUMNS);
+  if (!hasCurrentAvailabilityGrid) {
+    if (hasLegacyAvailabilityGrid) {
+      warnings.push({
+        message: 'Legacy 30-minute availability columns detected. They will be expanded to the 10-minute grid on import.',
+        severity: 'warning',
       });
     } else {
-      warnings.push({
-        message: `Missing ${missingAvailCols.length} availability columns`,
-        severity: 'warning',
+      errors.push({
+        message: 'Missing required availability columns. Provide either the full 10-minute grid or the legacy 30-minute grid.',
+        severity: 'error',
       });
     }
   }
@@ -148,6 +170,9 @@ export function validateStaffCsv(content: string): ValidationResult {
       });
     }
 
+    validateSlotAlignedHours(targetHours, rowNum, 'target_hours', errors);
+    validateSlotAlignedHours(maxHours, rowNum, 'max_hours', errors);
+
     // Year validation
     const year = parseInt(row.year);
     if (isNaN(year) || year < 1 || year > 6) {
@@ -167,6 +192,18 @@ export function validateStaffCsv(content: string): ValidationResult {
           row: rowNum,
           column: col,
           message: `Availability should be 0 or 1, got: ${val}`,
+          severity: 'warning',
+        });
+      }
+    }
+
+    for (const col of TRAVEL_BUFFER_COLUMNS) {
+      const val = row[col.toLowerCase()];
+      if (val !== undefined && val !== '' && val !== '0' && val !== '1') {
+        warnings.push({
+          row: rowNum,
+          column: col,
+          message: `Travel buffer flag should be 0 or 1, got: ${val}`,
           severity: 'warning',
         });
       }
@@ -196,9 +233,21 @@ export function parseStaffCsv(content: string): StaffMember[] {
   });
 
   return parsed.data.map(row => {
-    const availability: Record<string, boolean> = {};
+    const rawAvailability: Record<string, boolean> = {};
     for (const col of AVAILABILITY_COLUMNS) {
-      availability[col] = row[col.toLowerCase()] === '1';
+      if (row[col.toLowerCase()] !== undefined) {
+        rawAvailability[col] = row[col.toLowerCase()] === '1';
+      }
+    }
+    for (const col of LEGACY_AVAILABILITY_COLUMNS) {
+      if (row[col.toLowerCase()] !== undefined) {
+        rawAvailability[col] = row[col.toLowerCase()] === '1';
+      }
+    }
+    const travelBuffers = createDefaultTravelBuffers();
+    for (const day of DAY_NAMES) {
+      travelBuffers[day].beforeNextCommitment = row[TRAVEL_BUFFER_BEFORE_COLUMNS[day].toLowerCase()] === '1';
+      travelBuffers[day].afterPreviousCommitment = row[TRAVEL_BUFFER_AFTER_COLUMNS[day].toLowerCase()] === '1';
     }
 
     return {
@@ -207,7 +256,8 @@ export function parseStaffCsv(content: string): StaffMember[] {
       targetHours: parseFloat(row.target_hours) || 0,
       maxHours: parseFloat(row.max_hours) || 0,
       year: parseInt(row.year) || 1,
-      availability,
+      availability: normalizeAvailabilityMap(rawAvailability),
+      travelBuffers,
     };
   });
 }
@@ -305,6 +355,9 @@ export function validateDepartmentCsv(content: string): ValidationResult {
         severity: 'error',
       });
     }
+
+    validateSlotAlignedHours(targetHours, rowNum, 'target_hours', errors);
+    validateSlotAlignedHours(maxHours, rowNum, 'max_hours', errors);
   }
 
   return {
@@ -333,7 +386,7 @@ export function parseDepartmentCsv(content: string): Department[] {
 // ---------------------------------------------------------------------------
 
 export function staffToCsv(staff: StaffMember[]): string {
-  const headers = [...REQUIRED_STAFF_COLUMNS, ...AVAILABILITY_COLUMNS];
+  const headers = [...REQUIRED_STAFF_COLUMNS, ...TRAVEL_BUFFER_COLUMNS, ...AVAILABILITY_COLUMNS];
   
   const rows = staff.map(member => {
     const row: Record<string, string> = {
@@ -343,6 +396,11 @@ export function staffToCsv(staff: StaffMember[]): string {
       max_hours: member.maxHours.toString(),
       year: member.year.toString(),
     };
+
+    for (const day of DAY_NAMES) {
+      row[TRAVEL_BUFFER_BEFORE_COLUMNS[day]] = member.travelBuffers?.[day]?.beforeNextCommitment ? '1' : '0';
+      row[TRAVEL_BUFFER_AFTER_COLUMNS[day]] = member.travelBuffers?.[day]?.afterPreviousCommitment ? '1' : '0';
+    }
     
     for (const col of AVAILABILITY_COLUMNS) {
       row[col] = member.availability[col] ? '1' : '0';

@@ -6,6 +6,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSettingsStore, useUIStore, useStaffStore, useDepartmentStore, useFlagsStore } from '../../store';
 import type { AppSettings } from '../../../main/ipc-types';
+import { DEFAULT_MAX_SLOTS, DEFAULT_MIN_SLOTS, SLOT_MINUTES, TIME_SLOT_STARTS } from '../../../shared/constants';
 
 // Tooltip component with ? icon - uses fixed positioning to avoid clipping
 function Tooltip({ text }: { text: string }) {
@@ -113,8 +114,8 @@ export function SettingsPanel() {
       // Ensure all numeric values have valid defaults before saving
       const validatedSettings: AppSettings = {
         ...localSettings,
-        minSlots: isNaN(localSettings.minSlots) ? 4 : localSettings.minSlots,
-        maxSlots: isNaN(localSettings.maxSlots) ? 8 : localSettings.maxSlots,
+        minSlots: isNaN(localSettings.minSlots) ? DEFAULT_MIN_SLOTS : localSettings.minSlots,
+        maxSlots: isNaN(localSettings.maxSlots) ? DEFAULT_MAX_SLOTS : localSettings.maxSlots,
         frontDeskCoverageWeight: isNaN(localSettings.frontDeskCoverageWeight) ? 10000 : localSettings.frontDeskCoverageWeight,
         departmentTargetWeight: isNaN(localSettings.departmentTargetWeight) ? 1000 : localSettings.departmentTargetWeight,
         targetAdherenceWeight: isNaN(localSettings.targetAdherenceWeight) ? 100 : localSettings.targetAdherenceWeight,
@@ -290,37 +291,37 @@ export function SettingsPanel() {
                 <div>
                   <label className="label" htmlFor="minSlots">
                     Min Shift Slots
-                    <Tooltip text="Minimum shift length in 30-minute slots. A value of 4 means shifts must be at least 2 hours long." />
+                    <Tooltip text={`Minimum shift length in ${SLOT_MINUTES}-minute slots. A value of ${DEFAULT_MIN_SLOTS} means shifts must be at least 2 hours long.`} />
                   </label>
                   <input
                     id="minSlots"
                     type="number"
-                    min="2"
-                    max="8"
+                    min="1"
+                    max={TIME_SLOT_STARTS.length}
                     value={getNumberValue(localSettings.minSlots)}
                     onChange={(e) => handleNumberChange('minSlots', e.target.value)}
-                    onBlur={() => handleNumberBlur('minSlots', 4)}
+                    onBlur={() => handleNumberBlur('minSlots', DEFAULT_MIN_SLOTS)}
                     className="input"
                   />
-                  <p className="text-xs text-surface-500 mt-1">30-min slots</p>
+                  <p className="text-xs text-surface-500 mt-1">{SLOT_MINUTES}-min slots</p>
                 </div>
 
                 <div>
                   <label className="label" htmlFor="maxSlots">
                     Max Shift Slots
-                    <Tooltip text="Maximum shift length in 30-minute slots. A value of 8 means shifts can be up to 4 hours long." />
+                    <Tooltip text={`Maximum shift length in ${SLOT_MINUTES}-minute slots. A value of ${DEFAULT_MAX_SLOTS} means shifts can be up to 4 hours long.`} />
                   </label>
                   <input
                     id="maxSlots"
                     type="number"
-                    min="4"
-                    max="16"
+                    min="1"
+                    max={TIME_SLOT_STARTS.length}
                     value={getNumberValue(localSettings.maxSlots)}
                     onChange={(e) => handleNumberChange('maxSlots', e.target.value)}
-                    onBlur={() => handleNumberBlur('maxSlots', 8)}
+                    onBlur={() => handleNumberBlur('maxSlots', DEFAULT_MAX_SLOTS)}
                     className="input"
                   />
-                  <p className="text-xs text-surface-500 mt-1">30-min slots</p>
+                  <p className="text-xs text-surface-500 mt-1">{SLOT_MINUTES}-min slots</p>
                 </div>
               </div>
             </div>
@@ -442,7 +443,7 @@ export function SettingsPanel() {
                   className="input"
                 />
                 <p className="text-xs text-surface-500 mt-1">
-                  Bonus per 30-min slot when favored employee works preferred dept
+                  Bonus per slot when favored employee works preferred dept
                 </p>
               </div>
             </div>

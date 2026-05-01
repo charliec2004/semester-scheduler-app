@@ -11,7 +11,9 @@ from ortools.sat.python import cp_model
 from scheduler.config import (
     COLLABORATION_MINIMUM_HOURS,
     DAY_NAMES,
+    DAY_END_MINUTES,
     DEFAULT_SOLVER_MAX_TIME,
+    DEPARTMENT_UNITS_PER_HOUR,
     DEPARTMENT_HOUR_THRESHOLD,
     DEPARTMENT_LARGE_DEVIATION_PENALTY,
     DEPARTMENT_SCARCITY_BASE_WEIGHT,
@@ -44,6 +46,9 @@ from scheduler.config import (
     TARGET_HARD_DELTA_HOURS,
     TIME_SLOT_STARTS,
     TIMESET_BONUS_WEIGHT,
+    hours_to_slots,
+    legacy_per_slot_weight,
+    slots_to_hours,
 )
 from scheduler.data_access.department_loader import load_department_requirements
 from scheduler.data_access.staff_loader import load_staff_data
@@ -266,10 +271,10 @@ def solve_schedule(
                 f"  Fix: Either change their availability in the Staff tab, or choose a different time."
             )
 
-        weekly_limit_slots = int(round(weekly_hour_limits.get(employee, 0) * 2))
+        weekly_limit_slots = hours_to_slots(weekly_hour_limits.get(employee, 0))
         if weekly_limit_slots and len(slots) > weekly_limit_slots:
             raise ValueError(
-                f"TIMESET ERROR: {employee}'s timeset requires {len(slots) / 2:.1f} hours.\n"
+                f"TIMESET ERROR: {employee}'s timeset requires {slots_to_hours(len(slots)):.1f} hours.\n"
                 f"  Their max weekly hours is only {weekly_hour_limits[employee]:.1f}.\n"
                 f"  Fix: Reduce the timeset duration or increase their max hours in the Staff tab."
             )
@@ -297,7 +302,11 @@ def solve_schedule(
             qual_note = "" if ts["is_qualified"] else " (special assignment)"
             # Get start and end times properly
             start_time = TIME_SLOT_STARTS[ts['slots'][0]]
-            end_time = TIME_SLOT_STARTS[ts['slots'][-1] + 1] if ts['slots'][-1] + 1 < len(TIME_SLOT_STARTS) else "17:00"
+            end_time = (
+                TIME_SLOT_STARTS[ts['slots'][-1] + 1]
+                if ts['slots'][-1] + 1 < len(TIME_SLOT_STARTS)
+                else f"{DAY_END_MINUTES // 60:02d}:{DAY_END_MINUTES % 60:02d}"
+            )
             print(f"  - {ts['employee']} -> {ts['role']} on {ts['day']} at {start_time}-{end_time}{qual_note}")
 
     favored_departments_normalized: Dict[str, FavoredDepartment] = {}
@@ -369,7 +378,7 @@ def solve_schedule(
         if dept_role not in qual[trainee_two]:
             raise ValueError(f"--training person '{trainee_two}' is not qualified for department '{dept_role}'.")
 
-        min_target_slots = int(round(min(target_weekly_hours[trainee_one], target_weekly_hours[trainee_two]) * 2))
+        min_target_slots = hours_to_slots(min(target_weekly_hours[trainee_one], target_weekly_hours[trainee_two]))
         if min_target_slots > 0:
             target_slots = int(round(min_target_slots * TRAINING_TARGET_FRACTION))
             goal_slots = max(TRAINING_MIN_SLOTS, target_slots)
@@ -646,7 +655,7 @@ def solve_schedule(
             # If working in the last slot, that must be the end (no next slot exists)
             model.add(end[e, d, T[-1]] == work[e, d, T[-1]])
             
-            # Calculate total slots worked this day (in 30-minute increments)
+            # Calculate total slots worked this day
             total_slots_today = sum(work[e, d, t] for t in T)
             
             # Constraint 7.6 & 7.7: HARD minimum shift length constraint
@@ -685,13 +694,12 @@ def solve_schedule(
 
             model.add(total_slots_today <= max_slots_today)
 
-            # Block tiny shifts UNLESS this day has a forced assignment
-            # For non-favored staff, block anything under 2 hours; favored may take 1-hour shifts
+            # Block tiny shifts UNLESS this day has a forced assignment.
+            # Non-favored staff need 2 hours minimum; favored staff still need at least 1 hour.
             if not has_forced_assignment:
-                model.add(total_slots_today != 1)  # Not 30 minutes
-                if not is_favored:
-                    model.add(total_slots_today != 2)  # Not 1 hour
-                    model.add(total_slots_today != 3)  # Not 1.5 hours
+                minimum_shift_slots = FAVORED_MIN_SLOTS if is_favored else MIN_SLOTS_LOCAL
+                for disallowed_slots in range(1, minimum_shift_slots):
+                    model.add(total_slots_today != disallowed_slots)
     
     
     # ============================================================================
@@ -716,11 +724,11 @@ def solve_schedule(
         
         # Individual personal preference limit (customized per employee)
         max_weekly_hours = weekly_hour_limits.get(e, 40)  # Default to 40 if not specified
-        max_weekly_slots = int(round(max_weekly_hours * 2))  # Convert hours to 30-minute slots
+        max_weekly_slots = hours_to_slots(max_weekly_hours)
         model.add(total_weekly_slots <= max_weekly_slots)
         
         # Universal maximum (applies to everyone)
-        universal_max_slots = UNIVERSAL_MAXIMUM_HOURS * 2
+        universal_max_slots = hours_to_slots(UNIVERSAL_MAXIMUM_HOURS)
         model.add(total_weekly_slots <= universal_max_slots)
         
         print(f"   └─ {e}: max {max_weekly_hours} hours/week (universal limit: {UNIVERSAL_MAXIMUM_HOURS}h)")
@@ -807,9 +815,10 @@ def solve_schedule(
             
             model.add(frontdesk_end.get((e, d, T[-1]), 0) == assign.get((e, d, T[-1], "front_desk"), 0))
             
-            # HARD CONSTRAINT: Front desk minimum 2 hours (4 slots) if working it at all
-            # This prevents short front desk stints like 30min or 1 hour
+            # HARD CONSTRAINT: Front desk assignments must respect the same minimum shift length
+            # rules as the employee's overall day.
             total_front_desk_slots = sum(assign.get((e, d, t, "front_desk"), 0) for t in T)
+            is_favored = e.lower() in favored_employees_normalized
 
             # Check if THIS employee has forced front desk assignment on this day (via timeset)
             has_forced_fd_assignment = any(
@@ -828,15 +837,17 @@ def solve_schedule(
                 if day_check == d
             )
 
-            # NUCLEAR OPTION: Explicitly forbid 1, 2, or 3 slot front desk shifts
-            # Total front desk slots must be EITHER 0 (not working front desk) OR >= 4 (minimum 2 hours)
+            # Explicitly forbid undersized front desk blocks.
+            # EXCEPTION 1: Employee with forced FD assignment is exempt
+            # EXCEPTION 2: ALL employees exempt on days with ANY forced FD assignment
+            #              (forced FD can block adjacent slots, making normal minimums impossible)
+            min_front_desk_slots = FAVORED_MIN_SLOTS if is_favored else MIN_FRONT_DESK_SLOTS
             # EXCEPTION 1: Employee with forced FD assignment is exempt
             # EXCEPTION 2: ALL employees exempt on days with ANY forced FD assignment
             #              (forced FD can block adjacent slots, making normal minimums impossible)
             if not has_forced_fd_assignment and not day_has_any_forced_fd:
-                model.add(total_front_desk_slots != 1)  # Not 30 minutes
-                model.add(total_front_desk_slots != 2)  # Not 1 hour
-                model.add(total_front_desk_slots != 3)  # Not 1.5 hours
+                for disallowed_slots in range(1, min_front_desk_slots):
+                    model.add(total_front_desk_slots != disallowed_slots)
     
     
     # ============================================================================
@@ -903,7 +914,7 @@ def solve_schedule(
                 if (e, d, T[-1], r) in assign:
                     model.add(role_end.get((e, d, T[-1], r), 0) == assign[(e, d, T[-1], r)])
                 
-                # HARD CONSTRAINT: Minimum 1 hour (2 slots) per role assignment
+                # HARD CONSTRAINT: Minimum 1 hour per role assignment
                 total_role_slots = sum(assign.get((e, d, t, r), 0) for t in T)
 
                 # Check if employee has forced assignment for this role on this day (via timeset)
@@ -920,22 +931,23 @@ def solve_schedule(
                     if day_check == d
                 )
 
-                # Forbid single 30-minute slot for any role
+                # Forbid role blocks shorter than 1 hour for any role.
                 # EXCEPTION 1: Days with forced role assignments are exempt
                 # EXCEPTION 2: For front_desk, also exempt if ANY forced FD exists on this day
                 #              (forced FD can block adjacent slots, making normal minimums impossible)
                 fd_day_exempt = (r == FRONT_DESK_ROLE and day_has_any_forced_fd_for_step9c)
                 if not has_forced_role_assignment and not fd_day_exempt:
-                    model.add(total_role_slots != 1)
+                    for disallowed_slots in range(1, FAVORED_MIN_SLOTS):
+                        model.add(total_role_slots != disallowed_slots)
 
                 # CONDITIONAL: Enforce 2-hour minimum for non-FD departments (when toggle ON)
-                # Non-favored employees: each non-FD department block must be >= 4 slots (2 hours)
+                # Non-favored employees: each non-FD department block must be >= 2 hours.
                 # EXCEPTION: Days with forced role assignments are exempt (timesets override minimums)
                 if enforce_min_dept_block:
                     is_favored = e.lower() in favored_employees_normalized
                     if not is_favored and r != FRONT_DESK_ROLE and not has_forced_role_assignment:
-                        model.add(total_role_slots != 2)  # Not 1 hour
-                        model.add(total_role_slots != 3)  # Not 1.5 hours
+                        for disallowed_slots in range(FAVORED_MIN_SLOTS, MIN_SLOTS_LOCAL):
+                            model.add(total_role_slots != disallowed_slots)
     
     # ============================================================================
     # STEP 9D: CROSS-DEPARTMENT SPLIT RESTRICTION (EXPERIMENTAL)
@@ -947,25 +959,25 @@ def solve_schedule(
     if enforce_min_dept_block:
         for e in employees:
             for d in days:
-                # Track which non-FD depts have exactly 2 slots
-                has_2_slots = {}
+                # Track which non-FD departments have exactly 1 hour assigned.
+                has_one_hour_block = {}
                 for r in department_roles:
                     total_r = sum(assign.get((e, d, t, r), 0) for t in T)
-                    has_2 = model.new_bool_var(f"has_2_slots[{e},{d},{r}]")
-                    model.add(total_r == 2).only_enforce_if(has_2)
-                    model.add(total_r != 2).only_enforce_if(has_2.Not())
-                    has_2_slots[r] = has_2
+                    has_one_hour = model.new_bool_var(f"has_one_hour_block[{e},{d},{r}]")
+                    model.add(total_r == FAVORED_MIN_SLOTS).only_enforce_if(has_one_hour)
+                    model.add(total_r != FAVORED_MIN_SLOTS).only_enforce_if(has_one_hour.Not())
+                    has_one_hour_block[r] = has_one_hour
                 
-                # Count depts with exactly 2 slots
-                num_with_2 = sum(has_2_slots.values())
+                # Count departments with exactly one hour assigned.
+                num_with_2 = sum(has_one_hour_block.values())
                 
                 # Total shift length
                 total_shift = sum(work[e, d, t] for t in T)
                 
-                # If 4-slot shift (2 hours), can't have 2 non-FD depts each with 2 slots (1h+1h)
-                is_4_slot_shift = model.new_bool_var(f"is_4_slot[{e},{d}]")
-                model.add(total_shift == 4).only_enforce_if(is_4_slot_shift)
-                model.add(total_shift != 4).only_enforce_if(is_4_slot_shift.Not())
+                # If a 2-hour shift exists, it can't be split into two separate 1-hour blocks.
+                is_4_slot_shift = model.new_bool_var(f"is_min_shift[{e},{d}]")
+                model.add(total_shift == MIN_SLOTS_LOCAL).only_enforce_if(is_4_slot_shift)
+                model.add(total_shift != MIN_SLOTS_LOCAL).only_enforce_if(is_4_slot_shift.Not())
                 
                 model.add(num_with_2 <= 1).only_enforce_if(is_4_slot_shift)
     
@@ -1068,7 +1080,7 @@ def solve_schedule(
     
     total_department_units = sum(department_effective_units.values())
     department_max_units = {
-        role: int(round(department_max_hours[role] * 4))
+        role: int(round(department_max_hours[role] * DEPARTMENT_UNITS_PER_HOUR))
         for role in department_roles
     }
 
@@ -1081,7 +1093,7 @@ def solve_schedule(
         forced_units = 2 * forced_slots  # department_effective_units = 2 * assignments
         max_units = department_max_units.get(role, 0)
         max_hours = department_max_hours.get(role, 0)
-        forced_hours = forced_slots / 2
+        forced_hours = slots_to_hours(forced_slots)
         if forced_units > max_units:
             print(f"  WARNING: DEPT MAX EXCEEDED - {role}: forced {forced_hours}hrs ({forced_units} units) > max {max_hours}hrs ({max_units} units)")
 
@@ -1115,7 +1127,7 @@ def solve_schedule(
     # Encourage departments to hit target weekly hours (soft constraint)
     department_target_score = 0
     department_large_deviation_penalty = 0
-    threshold_units = department_hour_threshold * 4
+    threshold_units = int(round(department_hour_threshold * DEPARTMENT_UNITS_PER_HOUR))
 
     for role in department_roles:
         target_hours = department_hour_targets.get(role)
@@ -1124,7 +1136,7 @@ def solve_schedule(
         max_capacity_hours = sum(weekly_hour_limits.get(e, 0) for e in employees if role in qual[e])
         max_requirement_hours = department_max_hours.get(role, max_capacity_hours)
         adjusted_target_hours = min(target_hours, max_capacity_hours, max_requirement_hours)
-        target_units = int(adjusted_target_hours * 4)
+        target_units = int(round(adjusted_target_hours * DEPARTMENT_UNITS_PER_HOUR))
         total_role_units = department_effective_units[role]
 
         over = model.new_int_var(0, 400, f"department_over[{role}]")
@@ -1161,13 +1173,13 @@ def solve_schedule(
         
         # Get this employee's target (in hours, convert to slots)
         target_hours = target_weekly_hours.get(e, 11)  # Default 11 hours
-        target_slots = int(target_hours * 2)  # Convert to 30-min slots
-        delta_slots = int(TARGET_HARD_DELTA_HOURS_LOCAL * 2)
+        target_slots = hours_to_slots(target_hours)
+        delta_slots = hours_to_slots(TARGET_HARD_DELTA_HOURS_LOCAL)
         lower_bound = max(0, target_slots - delta_slots)
         upper_bound = target_slots + delta_slots
         max_weekly_hours = weekly_hour_limits.get(e, 40)
-        max_weekly_slots = int(round(max_weekly_hours * 2))
-        universal_max_slots = UNIVERSAL_MAXIMUM_HOURS * 2
+        max_weekly_slots = hours_to_slots(max_weekly_hours)
+        universal_max_slots = hours_to_slots(UNIVERSAL_MAXIMUM_HOURS)
         feasible_upper = min(upper_bound, max_weekly_slots, universal_max_slots)
         feasible_lower = min(lower_bound, availability_slots.get(e, lower_bound), feasible_upper)
 
@@ -1189,25 +1201,25 @@ def solve_schedule(
             # Their lower bound should be reduced by approximately their share of FD coverage
             is_fd_qualified = FRONT_DESK_ROLE in qual[e]
 
-            if total_forced_dept_slots >= 4:  # At least 2 hours of forced dept work
+            if total_forced_dept_slots >= hours_to_slots(2):  # At least 2 hours of forced dept work
                 # Heavy timeset load creates significant FD coverage demand
                 # which constrains the entire system. Reduce lower bounds accordingly.
-                if total_forced_dept_slots >= 30:  # Very heavy load (15+ hours of dept work)
+                if total_forced_dept_slots >= hours_to_slots(15):  # Very heavy load (15+ hours of dept work)
                     # Drop ALL lower bounds to 0 - let soft constraints guide scheduling
                     reduction = feasible_lower
                 elif is_fd_qualified:
                     # FD-qualified employees bear the coverage burden
-                    if total_forced_dept_slots >= 20:  # Heavy load (10+ hours)
-                        reduction = max(0, feasible_lower - 2)  # Keep 1 hour minimum
+                    if total_forced_dept_slots >= hours_to_slots(10):  # Heavy load (10+ hours)
+                        reduction = max(0, feasible_lower - hours_to_slots(1))  # Keep 1 hour minimum
                     else:
                         fd_burden = total_forced_dept_slots // num_fd_qualified
                         reduction = min(feasible_lower, fd_burden)
                 else:
                     # Non-FD employees: moderate reduction
-                    if total_forced_dept_slots >= 20:
+                    if total_forced_dept_slots >= hours_to_slots(10):
                         reduction = feasible_lower // 2
                     else:
-                        reduction = min(feasible_lower, total_forced_dept_slots // 10)
+                        reduction = min(feasible_lower, total_forced_dept_slots // hours_to_slots(5))
 
                 feasible_lower = max(0, feasible_lower - reduction)
 
@@ -1363,7 +1375,7 @@ def solve_schedule(
         if role not in COLLABORATION_MINIMUM_HOURS:
             continue
         
-        min_slots = int(COLLABORATION_MINIMUM_HOURS[role] * 2)  # Convert hours to 30-min slots
+        min_slots = hours_to_slots(COLLABORATION_MINIMUM_HOURS[role])
         
         if min_slots == 0:
             # No collaboration requirement for this department (e.g., data_systems with 1 person)
@@ -1427,7 +1439,7 @@ def solve_schedule(
     # ============================================================================
     # Soft constraint: minimize the difference in department hours between two employees
     equality_penalty = 0
-    EQUALITY_WEIGHT = 200  # Penalty per slot of difference
+    EQUALITY_WEIGHT = legacy_per_slot_weight(200)  # Penalty per slot of difference
     
     for idx, eq in enumerate(validated_equality):
         dept = eq["department"]
@@ -1504,7 +1516,7 @@ def solve_schedule(
     # Helps avoid scenarios where afternoons are understaffed relative to mornings
     
     morning_preference_score = 0
-    morning_slots = [t for t in T if t < 8]  # Slots 0-7 = 8:00am-12:00pm (4 hours)
+    morning_slots = [t for t in T if t < hours_to_slots(4)]  # 8:00am-12:00pm
     
     for d in days:
         for t in morning_slots:
@@ -1519,10 +1531,10 @@ def solve_schedule(
     # SHIFT TIME PREFERENCE - Per-employee, per-day morning/afternoon soft nudge
     # ============================================================================
     # Allow users to specify soft preferences for when specific employees should work
-    # Morning = 8am-12pm (slots 0-7), Afternoon = 12pm-5pm (slots 8-17)
+    # Morning = 8am-12pm, Afternoon = 12pm-5pm
     # This is a gentle nudge - won't override hard constraints or availability
     
-    SHIFT_PREF_BONUS_WEIGHT = 15  # Moderate weight - noticeable but not overwhelming
+    SHIFT_PREF_BONUS_WEIGHT = legacy_per_slot_weight(15)  # Moderate weight - noticeable but not overwhelming
     shift_time_pref_score = 0
     
     # Build a lookup for preferences: (employee_lower, day) -> 'morning' or 'afternoon'
@@ -1554,8 +1566,8 @@ def solve_schedule(
         shift_pref_lookup[(employee_name, normalized_day)] = pref.preference
     
     # Now calculate bonus for matching preferences
-    morning_time_slots = [t for t in T if t < 8]   # Slots 0-7 = 8am-12pm
-    afternoon_time_slots = [t for t in T if t >= 8]  # Slots 8-17 = 12pm-5pm
+    morning_time_slots = [t for t in T if t < hours_to_slots(4)]
+    afternoon_time_slots = [t for t in T if t >= hours_to_slots(4)]
     
     for (emp, day), pref_type in shift_pref_lookup.items():
         if pref_type == 'morning':
@@ -1748,9 +1760,13 @@ def solve_schedule(
                 day = ts["day"]
                 role = ts["role"]
                 start_time = TIME_SLOT_STARTS[ts['slots'][0]]
-                end_time = TIME_SLOT_STARTS[ts['slots'][-1] + 1] if ts['slots'][-1] + 1 < len(TIME_SLOT_STARTS) else "17:00"
+                end_time = (
+                    TIME_SLOT_STARTS[ts['slots'][-1] + 1]
+                    if ts['slots'][-1] + 1 < len(TIME_SLOT_STARTS)
+                    else f"{DAY_END_MINUTES // 60:02d}:{DAY_END_MINUTES % 60:02d}"
+                )
                 slot_range = f"{start_time}-{end_time}"
-                hours = len(ts["slots"]) / 2
+                hours = slots_to_hours(len(ts["slots"]))
 
                 # Check potential issues with this timeset
                 issues = []
@@ -1796,7 +1812,11 @@ def solve_schedule(
                 day = ts["day"]
                 slots = ts["slots"]
                 start_time = TIME_SLOT_STARTS[slots[0]]
-                end_time = TIME_SLOT_STARTS[slots[-1] + 1] if slots[-1] + 1 < len(TIME_SLOT_STARTS) else "17:00"
+                end_time = (
+                    TIME_SLOT_STARTS[slots[-1] + 1]
+                    if slots[-1] + 1 < len(TIME_SLOT_STARTS)
+                    else f"{DAY_END_MINUTES // 60:02d}:{DAY_END_MINUTES % 60:02d}"
+                )
 
                 # Check each slot - who can cover front desk?
                 problem_slots = []
@@ -1863,10 +1883,10 @@ def solve_schedule(
                     print(f"  {req['trainee_one']} & {req['trainee_two']} in {req['department']}")
                     print(f"  These employees have no overlapping availability - they can never work together.")
                     print(f"  Fix: Adjust their availability or remove this training pair.\n")
-                elif available < 4:  # Less than 2 hours of overlap
+                elif available < TRAINING_MIN_SLOTS:
                     print(f"TRAINING PAIR WARNING")
                     print(f"  {req['trainee_one']} & {req['trainee_two']} in {req['department']}")
-                    print(f"  Only {available / 2:.1f} hours of overlapping availability (may be insufficient).\n")
+                    print(f"  Only {slots_to_hours(available):.1f} hours of overlapping availability (may be insufficient).\n")
         elif validated_training:
             issues_found = True
             print(f"TRAINING PAIR ISSUE")
@@ -1880,7 +1900,7 @@ def solve_schedule(
             1 for e in employees for d in days for t in T
             if t not in unavailable.get(e, {}).get(d, [])
         )
-        total_available_hours = total_available_slots / 2
+        total_available_hours = slots_to_hours(total_available_slots)
 
         print(f"SCHEDULE STATISTICS")
         print(f"  Total employee target hours: {total_employee_target_hours:.1f}")

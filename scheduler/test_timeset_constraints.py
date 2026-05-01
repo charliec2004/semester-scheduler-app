@@ -7,16 +7,34 @@ This script progressively adds constraints to find the breaking point.
 
 from ortools.sat.python import cp_model
 
+from scheduler.config import (
+    DEPARTMENT_UNITS_PER_HOUR,
+    FAVORED_MIN_SLOTS,
+    MIN_SLOTS,
+    TIME_SLOT_STARTS,
+    hours_to_slots,
+)
 
-def test_with_real_scenario():
+
+def legacy_slot(slot_index: int) -> int:
+    """Convert an old 30-minute slot index to the 10-minute grid."""
+    return slot_index * 3
+
+
+def legacy_slot_range(start: int, stop: int) -> range:
+    """Convert an old half-hour slot range [start, stop) to the 10-minute grid."""
+    return range(legacy_slot(start), legacy_slot(stop))
+
+
+def run_real_scenario_diagnostic():
     """
-    Test with more realistic data matching the actual solver.
+    Diagnostic helper with more realistic data matching the actual solver.
     """
     print("\n" + "=" * 70)
     print("PROGRESSIVE CONSTRAINT TEST")
     print("=" * 70)
 
-    T = list(range(18))  # 8am-5pm in 30-min slots
+    T = list(range(len(TIME_SLOT_STARTS)))  # 8am-5pm in 10-minute slots
     days = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 
     # Match the actual employees (12 employees)
@@ -43,20 +61,20 @@ def test_with_real_scenario():
 
     # ALL timesets from the actual scenario
     forced_assignments = []
-    # Natalya: career_education Wed 9am-1pm (slots 2-9)
-    for t in range(2, 10):
+    # Natalya: career_education Wed 9am-1pm
+    for t in legacy_slot_range(2, 10):
         forced_assignments.append(("Natalya", "Wed", t, "career_education"))
-    # Natalya: front_desk Wed 4pm-5pm (slots 16-17)
-    for t in range(16, 18):
+    # Natalya: front_desk Wed 4pm-5pm
+    for t in legacy_slot_range(16, 18):
         forced_assignments.append(("Natalya", "Wed", t, "front_desk"))
-    # Wednesday: career_education Wed 9am-1pm (slots 2-9)
-    for t in range(2, 10):
+    # Wednesday: career_education Wed 9am-1pm
+    for t in legacy_slot_range(2, 10):
         forced_assignments.append(("Wednesday", "Wed", t, "career_education"))
-    # Devan: cpd_support Mon 9am-3pm (slots 2-13)
-    for t in range(2, 14):
+    # Devan: cpd_support Mon 9am-3pm
+    for t in legacy_slot_range(2, 14):
         forced_assignments.append(("Devan", "Mon", t, "cpd_support"))
-    # Devan: cpd_support Wed 8am-12:30pm (slots 0-8)
-    for t in range(0, 9):
+    # Devan: cpd_support Wed 8am-12:30pm
+    for t in legacy_slot_range(0, 9):
         forced_assignments.append(("Devan", "Wed", t, "cpd_support"))
 
     print(f"Employees: {len(employees)}")
@@ -72,7 +90,7 @@ def test_with_real_scenario():
         "5. Weekly hour limits",
         "6. FD coverage when dept work",
         "7. Max 1 FD per slot",
-        "8. FD minimum (4 slots with day exemption)",
+        "8. FD minimum (2 hours with day exemption)",
         "9. FD contiguity",
         "10. Role contiguity",
         "11. Minimum shift length (2 hours)",
@@ -86,19 +104,19 @@ def test_with_real_scenario():
 
     # Test incrementally
     for num_constraints in range(1, len(constraint_groups) + 1):
-        result = test_with_n_constraints(
+        result = _run_with_n_constraints(
             employees, days, T, roles, qual, forced_assignments,
             num_constraints, constraint_groups[:num_constraints]
         )
         if not result:
             print(f"\n>>> BREAKING CONSTRAINT: {constraint_groups[num_constraints-1]}")
-            return False
+            assert False, f"Breaking constraint: {constraint_groups[num_constraints-1]}"
 
     print("\n✓ ALL CONSTRAINTS PASS!")
-    return True
+    assert True
 
 
-def test_with_n_constraints(employees, days, T, roles, qual, forced_assignments, n, active_groups):
+def _run_with_n_constraints(employees, days, T, roles, qual, forced_assignments, n, active_groups):
     """Test with first n constraint groups active."""
     print(f"\n[{n}] Testing with: {active_groups[-1]}...")
 
@@ -200,10 +218,10 @@ def test_with_n_constraints(employees, days, T, roles, qual, forced_assignments,
         for e in employees:
             total_weekly_slots = sum(work[(e, d, t)] for d in days for t in T)
             max_hours = weekly_limits.get(e, 14)
-            max_slots = int(max_hours * 2)
+            max_slots = hours_to_slots(max_hours)
             model.add(total_weekly_slots <= max_slots)
             # Also add universal 19h limit
-            model.add(total_weekly_slots <= 38)
+            model.add(total_weekly_slots <= hours_to_slots(19))
 
     # ========================================
     # CONSTRAINT GROUP 6: FD coverage
@@ -237,9 +255,8 @@ def test_with_n_constraints(employees, days, T, roles, qual, forced_assignments,
                 has_forced_fd = any(f[0] == e and f[1] == d and f[3] == "front_desk" for f in forced_assignments)
                 day_has_any_forced_fd = any(f[1] == d and f[3] == "front_desk" for f in forced_assignments)
                 if not has_forced_fd and not day_has_any_forced_fd:
-                    model.add(total_fd != 1)
-                    model.add(total_fd != 2)
-                    model.add(total_fd != 3)
+                    for short_fd_shift in range(1, MIN_SLOTS):
+                        model.add(total_fd != short_fd_shift)
 
     # ========================================
     # CONSTRAINT GROUP 9: FD contiguity
@@ -328,11 +345,9 @@ def test_with_n_constraints(employees, days, T, roles, qual, forced_assignments,
 
                 has_forced = (e, d) in forced_employee_days
                 if not has_forced:
-                    model.add(total_slots >= 4).only_enforce_if(works_today)
-                    # Also block 1, 2, 3 slot shifts
-                    model.add(total_slots != 1)
-                    model.add(total_slots != 2)
-                    model.add(total_slots != 3)
+                    model.add(total_slots >= MIN_SLOTS).only_enforce_if(works_today)
+                    for short_shift in range(1, MIN_SLOTS):
+                        model.add(total_slots != short_shift)
 
     # ========================================
     # CONSTRAINT GROUP 12: Department min block (2 hours)
@@ -347,9 +362,8 @@ def test_with_n_constraints(employees, days, T, roles, qual, forced_assignments,
                     total_dept = sum(assign.get((e, d, t, r), 0) for t in T)
                     has_forced_dept = any(f[0] == e and f[1] == d and f[3] == r for f in forced_assignments)
                     if not has_forced_dept:
-                        model.add(total_dept != 1)  # Not 30 min
-                        model.add(total_dept != 2)  # Not 1 hour
-                        model.add(total_dept != 3)  # Not 1.5 hours
+                        for short_block in range(1, MIN_SLOTS):
+                            model.add(total_dept != short_block)
 
     # ========================================
     # CONSTRAINT GROUP 13: Role minimum (forbid 1-slot)
@@ -365,7 +379,8 @@ def test_with_n_constraints(employees, days, T, roles, qual, forced_assignments,
                     day_has_any_forced_fd = any(f[1] == d and f[3] == "front_desk" for f in forced_assignments)
                     fd_exempt = (r == "front_desk" and day_has_any_forced_fd)
                     if not has_forced_role and not fd_exempt:
-                        model.add(total_role != 1)
+                        for short_role in range(1, FAVORED_MIN_SLOTS):
+                            model.add(total_role != short_role)
 
     # ========================================
     # CONSTRAINT GROUP 14: STEP 9D cross-dept split
@@ -374,22 +389,22 @@ def test_with_n_constraints(employees, days, T, roles, qual, forced_assignments,
         dept_roles = ["career_education", "cpd_support"]
         for e in employees:
             for d in days:
-                has_2_slots = {}
+                has_1_hour_block = {}
                 for r in dept_roles:
                     total_r = sum(assign.get((e, d, t, r), 0) for t in T)
-                    has_2 = model.new_bool_var(f"has_2_slots[{e},{d},{r}]")
-                    model.add(total_r == 2).only_enforce_if(has_2)
-                    model.add(total_r != 2).only_enforce_if(has_2.Not())
-                    has_2_slots[r] = has_2
+                    has_1h = model.new_bool_var(f"has_1h_block[{e},{d},{r}]")
+                    model.add(total_r == FAVORED_MIN_SLOTS).only_enforce_if(has_1h)
+                    model.add(total_r != FAVORED_MIN_SLOTS).only_enforce_if(has_1h.Not())
+                    has_1_hour_block[r] = has_1h
 
-                num_with_2 = sum(has_2_slots.values())
+                num_with_1h = sum(has_1_hour_block.values())
                 total_shift = sum(work[(e, d, t)] for t in T)
 
-                is_4_slot_shift = model.new_bool_var(f"is_4_slot[{e},{d}]")
-                model.add(total_shift == 4).only_enforce_if(is_4_slot_shift)
-                model.add(total_shift != 4).only_enforce_if(is_4_slot_shift.Not())
+                is_min_shift = model.new_bool_var(f"is_min_shift[{e},{d}]")
+                model.add(total_shift == MIN_SLOTS).only_enforce_if(is_min_shift)
+                model.add(total_shift != MIN_SLOTS).only_enforce_if(is_min_shift.Not())
 
-                model.add(num_with_2 <= 1).only_enforce_if(is_4_slot_shift)
+                model.add(num_with_1h <= 1).only_enforce_if(is_min_shift)
 
     # ========================================
     # CONSTRAINT GROUP 15: Department max hours
@@ -406,7 +421,7 @@ def test_with_n_constraints(employees, days, T, roles, qual, forced_assignments,
 
         # Simplified effective units: 2 * assignments (ignoring dual FD credit for now)
         for r in dept_roles:
-            max_units = int(dept_max_hours[r] * 4)  # hours * 2 slots/hour * 2 (doubled)
+            max_units = int(dept_max_hours[r] * DEPARTMENT_UNITS_PER_HOUR)
             model.add(2 * department_assignments[r] <= max_units)
 
     # ========================================
@@ -462,20 +477,23 @@ def test_with_n_constraints(employees, days, T, roles, qual, forced_assignments,
 
         for e in employees:
             total_weekly_slots = sum(work[(e, d, t)] for d in days for t in T)
-            target_slots = int(target_hours_map.get(e, 11) * 2)
-            delta_slots = int(delta_hours * 2)
+            target_slots = hours_to_slots(target_hours_map.get(e, 11))
+            delta_slots = hours_to_slots(delta_hours)
             lower_bound = max(0, target_slots - delta_slots)
             upper_bound = target_slots + delta_slots
 
             # Adjust for weekly limits
             max_hours = weekly_limits.get(e, 14)
-            upper_bound = min(upper_bound, int(max_hours * 2))
+            upper_bound = min(upper_bound, hours_to_slots(max_hours))
 
             # RELAX LOWER BOUND when timesets are active
             # Timesets create coverage needs that may prevent employees from hitting targets
             if forced_assignments and lower_bound > 0:
-                if total_forced_dept_slots >= 10:
-                    reduction = min(lower_bound, (total_forced_dept_slots // 10) * 2)
+                if total_forced_dept_slots >= hours_to_slots(5):
+                    reduction = min(
+                        lower_bound,
+                        (total_forced_dept_slots // hours_to_slots(5)) * hours_to_slots(1),
+                    )
                     lower_bound = max(0, lower_bound - reduction)
 
             # HARD constraints
@@ -519,7 +537,7 @@ def test_natalya_role_contiguity():
     print("=" * 70)
 
     model = cp_model.CpModel()
-    T = list(range(18))
+    T = list(range(len(TIME_SLOT_STARTS)))
 
     # Just Natalya + FD coverage employee
     employees = ["Natalya", "Melissa"]
@@ -530,18 +548,8 @@ def test_natalya_role_contiguity():
     roles = ["front_desk", "career_education"]
 
     forced_assignments = [
-        # career_education 9am-1pm
-        ("Natalya", 2, "career_education"),
-        ("Natalya", 3, "career_education"),
-        ("Natalya", 4, "career_education"),
-        ("Natalya", 5, "career_education"),
-        ("Natalya", 6, "career_education"),
-        ("Natalya", 7, "career_education"),
-        ("Natalya", 8, "career_education"),
-        ("Natalya", 9, "career_education"),
-        # front_desk 4pm-5pm
-        ("Natalya", 16, "front_desk"),
-        ("Natalya", 17, "front_desk"),
+        *[("Natalya", t, "career_education") for t in legacy_slot_range(2, 10)],
+        *[("Natalya", t, "front_desk") for t in legacy_slot_range(16, 18)],
     ]
 
     # Create work variables
@@ -586,7 +594,7 @@ def test_natalya_role_contiguity():
     # Max shift length
     for e in employees:
         total_slots = sum(work[(e, t)] for t in T)
-        max_slots = 10 if e == "Natalya" else 8
+        max_slots = hours_to_slots(5) if e == "Natalya" else hours_to_slots(4)
         model.add(total_slots <= max_slots)
 
     # FD coverage when dept work
@@ -715,7 +723,7 @@ def test_natalya_role_contiguity():
     else:
         print("\n✗ Multi-role day fails!")
 
-    return status in [cp_model.OPTIMAL, cp_model.FEASIBLE]
+    assert status in [cp_model.OPTIMAL, cp_model.FEASIBLE]
 
 
 if __name__ == "__main__":

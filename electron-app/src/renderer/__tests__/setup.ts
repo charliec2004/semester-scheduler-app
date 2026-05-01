@@ -4,6 +4,7 @@
  */
 
 import { vi } from 'vitest';
+import { DEFAULT_MAX_SLOTS, DEFAULT_MIN_SLOTS } from '../../shared/constants';
 
 // Mock window.electronAPI
 const mockElectronAPI = {
@@ -18,8 +19,8 @@ const mockElectronAPI = {
   settings: {
     load: vi.fn().mockResolvedValue({
       solverMaxTime: 180,
-      minSlots: 4,
-      maxSlots: 8,
+      minSlots: DEFAULT_MIN_SLOTS,
+      maxSlots: DEFAULT_MAX_SLOTS,
       frontDeskCoverageWeight: 10000,
       departmentTargetWeight: 1000,
       targetAdherenceWeight: 100,

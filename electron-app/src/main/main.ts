@@ -20,7 +20,7 @@ import type {
   StaffMember,
   Department,
 } from './ipc-types';
-import { DEFAULT_SETTINGS } from './ipc-types';
+import { DEFAULT_SETTINGS, normalizeAppSettings } from './ipc-types';
 import {
   initUpdater,
   checkForUpdates,
@@ -56,22 +56,7 @@ const store = new Store<{
   savedDepartments: Department[];
 }>({
   defaults: {
-    settings: {
-      solverMaxTime: 180,
-      minSlots: 4,
-      maxSlots: 8,
-      frontDeskCoverageWeight: 10000,
-      departmentTargetWeight: 1000,
-      targetAdherenceWeight: 100,
-      collaborativeHoursWeight: 200,
-      shiftLengthWeight: 20,
-      favoredEmployeeDeptWeight: 50,
-      departmentHourThreshold: 4,
-      targetHardDeltaHours: 5,
-      highContrast: false,
-      fontSize: 'medium',
-      enforceMinDeptBlock: true,
-    },
+    settings: DEFAULT_SETTINGS,
     presets: [],
     recentFiles: {},
     history: [],
@@ -258,8 +243,9 @@ function createWindow(): void {
   mainWindow = new BrowserWindow(windowOptions);
 
   // Load the renderer
-  if (process.env.NODE_ENV === 'development' || !app.isPackaged) {
-    mainWindow.loadURL('http://localhost:3000');
+  const rendererDevUrl = process.env.ELECTRON_RENDERER_URL || process.env.VITE_DEV_SERVER_URL;
+  if (rendererDevUrl) {
+    mainWindow.loadURL(rendererDevUrl);
     // DevTools can be opened manually with Cmd+Option+I (Mac) or Ctrl+Shift+I (Windows/Linux)
     // mainWindow.webContents.openDevTools();
   } else {
@@ -448,13 +434,14 @@ function registerIpcHandlers(): void {
 
   // Settings
   ipcMain.handle('settings:load', () => {
-    // Merge stored settings with defaults to ensure new properties have values
     const stored = store.get('settings') as Partial<AppSettings>;
-    return { ...DEFAULT_SETTINGS, ...stored };
+    const normalized = normalizeAppSettings(stored);
+    store.set('settings', normalized);
+    return normalized;
   });
 
   ipcMain.handle('settings:save', (_event, settings: AppSettings) => {
-    store.set('settings', settings);
+    store.set('settings', normalizeAppSettings(settings));
     return { success: true };
   });
 

@@ -7,7 +7,10 @@ import { useState } from 'react';
 import { useDepartmentStore, useUIStore } from '../../store';
 import { EmptyState } from '../ui/EmptyState';
 import { departmentsToCsv } from '../../utils/csvValidators';
+import { SLOT_MINUTES } from '@shared/constants';
 import type { Department } from '../../../main/ipc-types';
+
+const HOUR_INPUT_STEP = SLOT_MINUTES / 60;
 
 export function DepartmentsTab() {
   const { departments, updateDepartment, addDepartment, removeDepartment, reorderDepartments, dirty, setDirty, saveDepartments } = useDepartmentStore();
@@ -284,7 +287,7 @@ export function DepartmentsTab() {
                       type="number"
                       min="0"
                       max="100"
-                      step="0.5"
+                      step={HOUR_INPUT_STEP}
                       value={dept.targetHours || ''}
                       onChange={(e) => updateDepartment(index, { targetHours: parseFloat(e.target.value) || 0 })}
                       onBlur={(e) => {
@@ -300,7 +303,7 @@ export function DepartmentsTab() {
                       type="number"
                       min="0"
                       max="100"
-                      step="0.5"
+                      step={HOUR_INPUT_STEP}
                       value={dept.maxHours || ''}
                       onChange={(e) => updateDepartment(index, { maxHours: parseFloat(e.target.value) || 0 })}
                       onBlur={(e) => {
